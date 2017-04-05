@@ -1,0 +1,132 @@
+#cloud-config
+
+ssh_authorized_keys:
+ - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDDFxS50TzcNlK8FSMVEjpK/uJBFQnQ1Kjj3qtRLyUm2zeVjFCxV6Dys5ycRFZwxNMRnJB1ajnmjPkaWc/ayhIqB8gIST0pEOYdsLQGZ7aK8aCD5QorfvaOgUbTmjPU9bPqjn2iXXhJX0ROi+mRIVf3eRP+RdA23hR9iB8rKRc1cyNtRjAkLbZm18t1x53/wx0HuwdYUy8sdUl6M+86AoS5pxnBGs54NW97rtHZmq03ousa0u7Y8swfvmL0FVzynC5ricpMIs7JUAvdSLVmmCTIUsZ+drNDjluOOPppWYVckk04HRzsPXX/gWHF2ZfQ+x0V/TcgEDLWVq47NNXyC/1t
+
+hostname: kube-worker1
+
+coreos:
+  units:
+    - name: 10-ens3.network
+      content: |
+        [Match]
+        MACAddress=52:54:00:fe:b2:01
+
+        [Network]
+        Address=192.168.122.128/24
+        Gateway=192.168.122.1
+        DNS=8.8.8.8
+
+    - name: "kubelet.service"
+      command: "start"
+      content: |
+        [Service]
+        Environment=KUBELET_IMAGE_TAG=v1.6.0_coreos.0
+        Environment="RKT_RUN_ARGS=--uuid-file-save=/var/run/kubelet-pod.uuid \
+          --volume dns,kind=host,source=/etc/resolv.conf \
+          --mount volume=dns,target=/etc/resolv.conf \
+          --volume var-log,kind=host,source=/var/log \
+          --mount volume=var-log,target=/var/log"
+        ExecStartPre=/usr/bin/mkdir -p /etc/kubernetes/manifests
+        ExecStartPre=/usr/bin/mkdir -p /var/log/containers
+        ExecStartPre=-/usr/bin/rkt rm --uuid-file=/var/run/kubelet-pod.uuid
+        ExecStart=/usr/lib/coreos/kubelet-wrapper \
+          --api-servers=https://192.168.122.30 \
+          --container-runtime=docker \
+          --register-node=true \
+          --allow-privileged=true \
+          --pod-manifest-path=/etc/kubernetes/manifests \
+          --hostname-override=192.168.122.128 \
+          --cluster_dns=10.3.0.10 \
+          --cluster_domain=cluster.local \
+          --kubeconfig=/etc/kubernetes/worker-kubeconfig.yaml \
+          --tls-cert-file=/etc/kubernetes/ssl/worker.pem \
+          --tls-private-key-file=/etc/kubernetes/ssl/worker-key.pem
+        ExecStop=-/usr/bin/rkt stop --uuid-file=/var/run/kubelet-pod.uuid
+        Restart=always
+        RestartSec=10
+        [Install]
+        WantedBy=multi-user.target
+
+write_files:
+  - path: "/etc/kubernetes/ssl/ca.pem"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      <CA.PEM>
+
+  - path: "/etc/kubernetes/ssl/worker.pem"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      <WORKER.PEM>
+
+  - path: "/etc/kubernetes/ssl/worker-key.pem"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      <WORKER-KEY.PEM>
+
+  - path: "/etc/kubernetes/manifests/kube-proxy.yaml"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-proxy
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-proxy
+          image: quay.io/coreos/hyperkube:v1.5.4_coreos.0
+          command:
+          - /hyperkube
+          - proxy
+          - --master=https://192.168.122.30
+          - --kubeconfig=/etc/kubernetes/worker-kubeconfig.yaml
+          securityContext:
+            privileged: true
+          volumeMounts:
+          - mountPath: /etc/ssl/certs
+            name: "ssl-certs"
+          - mountPath: /etc/kubernetes/worker-kubeconfig.yaml
+            name: "kubeconfig"
+            readOnly: true
+          - mountPath: /etc/kubernetes/ssl
+            name: "etc-kube-ssl"
+            readOnly: true
+        volumes:
+        - name: "ssl-certs"
+          hostPath:
+            path: "/usr/share/ca-certificates"
+        - name: "kubeconfig"
+          hostPath:
+            path: "/etc/kubernetes/worker-kubeconfig.yaml"
+        - name: "etc-kube-ssl"
+          hostPath:
+            path: "/etc/kubernetes/ssl"
+
+  - path: "/etc/kubernetes/worker-kubeconfig.yaml"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Config
+      clusters:
+      - name: local
+        cluster:
+          certificate-authority: /etc/kubernetes/ssl/ca.pem
+      users:
+      - name: kubelet
+        user:
+          client-certificate: /etc/kubernetes/ssl/worker.pem
+          client-key: /etc/kubernetes/ssl/worker-key.pem
+      contexts:
+      - context:
+          cluster: local
+          user: kubelet
+        name: kubelet-context
+      current-context: kubelet-context
+

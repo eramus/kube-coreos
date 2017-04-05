@@ -1,0 +1,60 @@
+#cloud-config
+
+ssh_authorized_keys:
+  - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDDFxS50TzcNlK8FSMVEjpK/uJBFQnQ1Kjj3qtRLyUm2zeVjFCxV6Dys5ycRFZwxNMRnJB1ajnmjPkaWc/ayhIqB8gIST0pEOYdsLQGZ7aK8aCD5QorfvaOgUbTmjPU9bPqjn2iXXhJX0ROi+mRIVf3eRP+RdA23hR9iB8rKRc1cyNtRjAkLbZm18t1x53/wx0HuwdYUy8sdUl6M+86AoS5pxnBGs54NW97rtHZmq03ousa0u7Y8swfvmL0FVzynC5ricpMIs7JUAvdSLVmmCTIUsZ+drNDjluOOPppWYVckk04HRzsPXX/gWHF2ZfQ+x0V/TcgEDLWVq47NNXyC/1t
+
+hostname: haproxy2
+
+coreos:
+  units:
+    - name: 10-ens3.network
+      content: |
+        [Match]
+        MACAddress=52:54:00:fe:b3:c6
+
+        [Network]
+        Address=192.168.122.30/24
+        Gateway=192.168.122.1
+        DNS=8.8.8.8
+
+    - name: "haproxy.service"
+      command: "start"
+      content: |
+        [Unit]
+        Description=Start
+
+        [Service]
+        Restart=always
+        ExecStart=/usr/bin/docker run --name haproxy -v /opt/haproxy:/opt/haproxy -p 443:443 haproxy -f /opt/haproxy/haproxy.conf
+        ExecStop=/usr/bin/docker rm -f haproxy
+
+write_files:
+  - path: "/opt/haproxy/haproxy.conf"
+    permissions: "0600"
+    owner: "999"
+    content: |
+      global
+        log /dev/log    local0
+        log /dev/log    local1 notice
+        daemon
+
+        # Default SSL material locations
+        ca-base /etc/ssl/certs
+        crt-base /etc/ssl/private
+
+      frontend kube-master_proxy
+        bind *:443
+        mode tcp
+        option tcplog
+        default_backend kube-master_nodes
+        timeout client          1m
+
+      backend kube-master_nodes
+        mode tcp
+        balance roundrobin
+        option ssl-hello-chk
+        server kube-master1 192.168.122.31:443 check
+        server kube-master2 192.168.122.32:443 check
+        timeout connect        10s
+        timeout server          1m
+

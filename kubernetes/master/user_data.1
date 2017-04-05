@@ -1,0 +1,252 @@
+#cloud-config
+
+ssh_authorized_keys:
+ - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDDFxS50TzcNlK8FSMVEjpK/uJBFQnQ1Kjj3qtRLyUm2zeVjFCxV6Dys5ycRFZwxNMRnJB1ajnmjPkaWc/ayhIqB8gIST0pEOYdsLQGZ7aK8aCD5QorfvaOgUbTmjPU9bPqjn2iXXhJX0ROi+mRIVf3eRP+RdA23hR9iB8rKRc1cyNtRjAkLbZm18t1x53/wx0HuwdYUy8sdUl6M+86AoS5pxnBGs54NW97rtHZmq03ousa0u7Y8swfvmL0FVzynC5ricpMIs7JUAvdSLVmmCTIUsZ+drNDjluOOPppWYVckk04HRzsPXX/gWHF2ZfQ+x0V/TcgEDLWVq47NNXyC/1t
+
+hostname: kube-master1
+
+coreos:
+  units:
+    - name: 10-ens3.network
+      content: |
+        [Match]
+        MACAddress=52:54:00:fe:b1:01
+
+        [Network]
+        Address=192.168.122.31/24
+        Gateway=192.168.122.1
+        DNS=8.8.8.8
+
+    - name: "kubelet.service"
+      command: "start"
+      content: |
+        [Service]
+        Environment=KUBELET_IMAGE_TAG=v1.6.0_coreos.0
+        Environment="RKT_RUN_ARGS=--uuid-file-save=/var/run/kubelet-pod.uuid \
+          --volume var-log,kind=host,source=/var/log \
+          --mount volume=var-log,target=/var/log \
+          --volume dns,kind=host,source=/etc/resolv.conf \
+          --mount volume=dns,target=/etc/resolv.conf"
+        ExecStartPre=/usr/bin/mkdir -p /etc/kubernetes/manifests
+        ExecStartPre=/usr/bin/mkdir -p /var/log/containers
+        ExecStartPre=-/usr/bin/rkt rm --uuid-file=/var/run/kubelet-pod.uuid
+        ExecStart=/usr/lib/coreos/kubelet-wrapper \
+          --kubeconfig=/etc/kubernetes/kubelet/kubeconfig \
+          --container-runtime=docker \
+          --allow-privileged=true \
+          --pod-manifest-path=/etc/kubernetes/manifests \
+          --hostname-override=192.168.122.31 \
+          --cluster_dns=10.3.0.10 \
+          --cluster_domain=cluster.local
+        ExecStop=-/usr/bin/rkt stop --uuid-file=/var/run/kubelet-pod.uuid
+        Restart=always
+        RestartSec=10
+        [Install]
+        WantedBy=multi-user.target
+
+write_files:
+  - path: "/etc/kubernetes/ssl/ca.pem"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      <CA.PEM>
+
+  - path: "/etc/kubernetes/ssl/apiserver.pem"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      <SERVER.PEM>
+
+  - path: "/etc/kubernetes/ssl/apiserver-key.pem"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      <SERVER-KEY.PEM>
+
+  - path: "/etc/kubernetes/manifests/kube-apiserver.yaml"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-apiserver
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-apiserver
+          image: quay.io/coreos/hyperkube:v1.6.0_coreos.0
+          command:
+          - /hyperkube
+          - apiserver
+          - --bind-address=192.168.122.31
+          - --etcd-servers=http://192.168.122.20:2379
+          - --allow-privileged=true
+          - --service-cluster-ip-range=10.3.0.0/24
+          - --secure-port=443
+          - --advertise-address=192.168.122.30
+          - --admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota
+          - --tls-cert-file=/etc/kubernetes/ssl/apiserver.pem
+          - --tls-private-key-file=/etc/kubernetes/ssl/apiserver-key.pem
+          - --client-ca-file=/etc/kubernetes/ssl/ca.pem
+          - --service-account-key-file=/etc/kubernetes/ssl/apiserver-key.pem
+          - --runtime-config=extensions/v1beta1/networkpolicies=true
+          - --anonymous-auth=false
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              port: 8080
+              path: /healthz
+            initialDelaySeconds: 15
+            timeoutSeconds: 15
+          ports:
+          - containerPort: 443
+            hostPort: 443
+            name: https
+          - containerPort: 8080
+            hostPort: 8080
+            name: local
+          volumeMounts:
+          - mountPath: /etc/kubernetes/ssl
+            name: ssl-certs-kubernetes
+            readOnly: true
+          - mountPath: /etc/ssl/certs
+            name: ssl-certs-host
+            readOnly: true
+        volumes:
+        - hostPath:
+            path: /etc/kubernetes/ssl
+          name: ssl-certs-kubernetes
+        - hostPath:
+            path: /usr/share/ca-certificates
+          name: ssl-certs-host
+
+  - path: "/etc/kubernetes/manifests/kube-proxy.yaml"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-proxy
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-proxy
+          image: quay.io/coreos/hyperkube:v1.6.0_coreos.0
+          command:
+          - /hyperkube
+          - proxy
+          - --master=http://127.0.0.1:8080
+          securityContext:
+            privileged: true
+          volumeMounts:
+          - mountPath: /etc/ssl/certs
+            name: ssl-certs-host
+            readOnly: true
+        volumes:
+        - hostPath:
+            path: /usr/share/ca-certificates
+          name: ssl-certs-host
+
+  - path: "/etc/kubernetes/kubelet/kubeconfig"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      clusters:
+      - cluster:
+          certificate-authority: /etc/kubernetes/ssl/ca.pem
+          server: https://192.168.122.30
+        name: staging
+      contexts:
+      - context:
+          cluster: staging
+          user: admin
+        name: cc
+      current-context: cc
+      kind: Config
+      preferences: {}
+      users:
+      - name: admin
+        user:
+          token: token123
+
+  - path: "/etc/kubernetes/manifests/kube-controller-manager.yaml"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-controller-manager
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-controller-manager
+          image: quay.io/coreos/hyperkube:v1.6.0_coreos.0
+          command:
+          - /hyperkube
+          - controller-manager
+          - --master=http://127.0.0.1:8080
+          - --leader-elect=true
+          - --service-account-private-key-file=/etc/kubernetes/ssl/apiserver-key.pem
+          - --root-ca-file=/etc/kubernetes/ssl/ca.pem
+          resources:
+            requests:
+              cpu: 200m
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /healthz
+              port: 10252
+            initialDelaySeconds: 15
+            timeoutSeconds: 15
+          volumeMounts:
+          - mountPath: /etc/kubernetes/ssl
+            name: ssl-certs-kubernetes
+            readOnly: true
+          - mountPath: /etc/ssl/certs
+            name: ssl-certs-host
+            readOnly: true
+        volumes:
+        - hostPath:
+            path: /etc/kubernetes/ssl
+          name: ssl-certs-kubernetes
+        - hostPath:
+            path: /usr/share/ca-certificates
+          name: ssl-certs-host
+
+  - path: "/etc/kubernetes/manifests/kube-scheduler.yaml"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-scheduler
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-scheduler
+          image: quay.io/coreos/hyperkube:v1.6.0_coreos.0
+          command:
+          - /hyperkube
+          - scheduler
+          - --master=http://127.0.0.1:8080
+          - --leader-elect=true
+          resources:
+            requests:
+              cpu: 100m
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /healthz
+              port: 10251
+            initialDelaySeconds: 15
+            timeoutSeconds: 15
+

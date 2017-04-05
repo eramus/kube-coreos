@@ -1,0 +1,41 @@
+#cloud-config
+
+ssh_authorized_keys:
+  - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDDFxS50TzcNlK8FSMVEjpK/uJBFQnQ1Kjj3qtRLyUm2zeVjFCxV6Dys5ycRFZwxNMRnJB1ajnmjPkaWc/ayhIqB8gIST0pEOYdsLQGZ7aK8aCD5QorfvaOgUbTmjPU9bPqjn2iXXhJX0ROi+mRIVf3eRP+RdA23hR9iB8rKRc1cyNtRjAkLbZm18t1x53/wx0HuwdYUy8sdUl6M+86AoS5pxnBGs54NW97rtHZmq03ousa0u7Y8swfvmL0FVzynC5ricpMIs7JUAvdSLVmmCTIUsZ+drNDjluOOPppWYVckk04HRzsPXX/gWHF2ZfQ+x0V/TcgEDLWVq47NNXyC/1t
+
+hostname: etcd2
+
+coreos:
+  units:
+    - name: 10-ens3.network
+      content: |
+        [Match]
+        MACAddress=52:54:00:fe:b0:02
+
+        [Network]
+        Address=192.168.122.11/24
+        Gateway=192.168.122.1
+        DNS=8.8.8.8
+
+    - name: "etcd-member.service"
+      drop-ins:
+      - name: "10-etcd-member.conf"
+        content: |
+          [Unit]
+          Description=Start
+          Conflicts=etcd.service
+          Conflicts=etcd2.service
+
+          [Service]
+          Restart=always
+          Environment="ETCD_IMAGE_TAG=v3.1.0"
+          Environment="ETCD_NAME=etcd2"
+          Environment="ETCD_DISCOVERY=https://discovery.etcd.io/ad12f23aa20ffccf3d3a3ea253212591"
+          Environment="ETCD_INITIAL_ADVERTISE_PEER_URLS=http://192.168.122.11:2380"
+          Environment="ETCD_LISTEN_PEER_URLS=http://192.168.122.11:2380"
+          Environment="ETCD_LISTEN_CLIENT_URLS=http://192.168.122.11:2379,http://127.0.0.1:2379"
+          Environment="ETCD_ADVERTISE_CLIENT_URLS=http://192.168.122.11:2379"
+
+    - name: "etcd-member.service"
+      command: "start"
+
